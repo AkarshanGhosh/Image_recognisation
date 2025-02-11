@@ -24,10 +24,24 @@ The dataset is automatically downloaded when you run the `data_loader.py` script
 
 ---
 
-## 🛠️ Setup & Installation
-To run this project, follow these steps:
 
-### **1️⃣ Clone the Repository**
-```bash
-git clone https://github.com/AkarshanGhosh/Image_recognisation.git
-cd Image_recognisation
+
+### Steps to Clone and Run the Project
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/AkarshanGhosh/Image_recognisation.git
+   cd Image_recognisation
+
+2. Run the data_loader.py
+   ```bash
+   python src/data_loader.py
+
+3. Train the Model
+   ```bash
+   python src/train.py
+
+4. Make Predictions
+   ```bash
+   python src/predict.py --image <path_to_image>
+
