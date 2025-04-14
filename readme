@@ -1,0 +1,61 @@
+Here we wll be discussing the operations we will be using :-
+
+
+Data Transformation:- 
+
+Data transformation in Pythorch (for image processing). Transformation  are basically operation we apply to your data (image) to prepare them for training a machine learning model.
+They can standardize, augment, or preprocess the data to make it suitable
+for the model.
+Convert data to a format the model understands (like tensors).
+Normalize data to make training faster and more stable.
+Augment data to improve model generalization (e.g., flipping, rotating images)
+
+transforms.Compose:
+
+This is a PyTorch utility that lets you chain multiple transformations together. The transformations are applied sequentially in the order you list them.
+Think of it like a pipeline: input data → transformation 1 → transformation 2 → output
+
+transforms.ToTensor():
+
+Converts an image (usually in PIL format or NumPy array) into a PyTorch tensor.
+It also changes the data range from [0, 255] (common for images) to [0, 1] and rearranges the dimensions from (height, width, channels) to (channels, height, width) (PyTorch’s expected format).
+Example: A 224x224 RGB image becomes a tensor of shape (3, 224, 224).
+
+transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)):
+
+Normalizes the tensor by subtracting a mean and dividing by a standard deviation for each channel (R, G, B in case of images).
+Formula for each channel:
+output = (input - mean) / std
+Here:
+(0.5, 0.5, 0.5) is the mean for the R, G, B channels.
+(0.5, 0.5, 0.5) is the standard deviation for the R, G, B channels.
+
+What’s the Output?
+
+If you pass an image through this transform, it:
+Gets converted to a tensor with values in [0, 1].
+Gets normalized to have values in [-1, 1] for each channel.
+This preprocessed tensor is ready to be fed into a neural network.
+
+Why Normalize?
+
+Normalization helps stabilize and speed up training. Neural networks often struggle with data that has large or inconsistent ranges.
+The choice of (0.5, 0.5, 0.5) for both mean and std is common for datasets where you don’t have specific mean/std values (unlike ImageNet, which uses (0.485, 0.456, 0.406) for mean and (0.229, 0.224, 0.225) for std).
+
+Video Links 
+-->PyTorch Transformations to Augment Image Training Data (5.4)
+---->https://www.youtube.com/watch?v=20JoEmQb810&ab_channel=JeffHeaton
+
+--->Image Augmentation for Deep Learning
+---->https://www.youtube.com/watch?v=1HlnucQG3FE&ab_channel=ADataOdyssey
+
+--->Processing Image Data for Deep Learning
+---->https://www.youtube.com/watch?v=Hs5RhjpQVRo&ab_channel=Siddhardhan
+
+In Summary a transformation in PyTorch is a process to modify or preprocess data (e.g., images) to make it suitable for a machine learning model. It includes steps like:
+
+-->Converting data to tensors (ToTensor).
+-->Normalizing data to a specific range (Normalize, e.g., [-1, 1]).
+-->Other tweaks like resizing, cropping, or augmenting.
+
+transforms.Compose to chain these operations, ensuring data is model-ready. Simple, yet powerful!
