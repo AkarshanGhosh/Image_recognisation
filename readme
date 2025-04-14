@@ -112,3 +112,154 @@ breakdown:
 -->testset: Uses the test data.
 -->shuffle=False: Keeps the test images in their original order (no need to randomize for testing).
 -->batch_size=32 and num_workers=0 are the same as before.
+
+# 3. Define CNN model
+class CNN(nn.Module):
+
+-->What it does: Creates a new class called CNN that inherits from nn.Module (PyTorch’s base class for neural networks).
+-->Simple explanation:
+--->class CNN: Defines your model’s name as CNN.
+--->nn.Module: Gives your model all the tools PyTorch needs to handle layers, parameters, and training.
+Think of it as setting up a blueprint for your neural network.
+
+
+def __init__(self):
+
+-->What it does: Defines the initializer for the CNN class, where you set up the layers of the network.
+Simple explanation:
+__init__ is like the setup function that runs when you create a new CNN model.
+It’s where you define the building blocks (layers) of your network
+
+super(CNN, self).__init__():
+
+-->What it does: Calls the parent class (nn.Module) initializer to set up the model properly.
+Simple explanation:
+--->super() makes sure nn.Module does its behind-the-scenes setup (like tracking layers and parameters).
+--->It’s like telling PyTorch, “Hey, make sure my model has all the standard neural network features.”
+
+self.conv1 = nn.Conv2d(3, 32, 3, padding=1):
+-->What it does: Creates the first convolutional layer (conv1) to process the input image.
+Simple explanation:
+--->nn.Conv2d: A layer that scans the image with filters to find patterns (like edges or shapes).
+--->3: Input channels (CIFAR-10 images are RGB, so 3 channels: Red, Green, Blue).
+--->32: Output channels (creates 32 new "feature maps" or filtered versions of the image).
+--->3: Kernel size (uses 3x3 filters to scan the image).
+padding=1: Adds a 1-pixel border around the image to keep the output size same as input (32x32 stays 32x32).
+Think of it as a scanner that looks for 32 different patterns in the RGB image.
+python
+
+Copy
+        self.pool = nn.MaxPool2d(2, 2)
+What it does: Creates a max pooling layer to shrink the image size.
+Simple explanation:
+nn.MaxPool2d: Reduces the image size by picking the maximum value in small patches.
+2: Size of the patch (2x2).
+2: Stride (moves the patch 2 pixels at a time).
+Effect: Cuts the image size in half (e.g., 32x32 → 16x16) while keeping important features.
+It’s like zooming out to focus on the big picture.
+python
+
+Copy
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+What it does: Creates the second convolutional layer (conv2) to find more complex patterns.
+Simple explanation:
+Same as conv1, but:
+32: Takes the 32 feature maps from conv1 as input.
+64: Outputs 64 new feature maps (more detailed patterns).
+3: Still uses 3x3 filters.
+padding=1: Keeps the size same (16x16 stays 16x16 after this layer).
+It’s like a deeper scan to find even more advanced patterns.
+python
+
+Copy
+        self.fc1 = nn.Linear(64 * 8 * 8, 128)
+What it does: Creates the first fully connected (dense) layer to process flattened data.
+Simple explanation:
+nn.Linear: A layer where every input is connected to every output (like a regular neural network layer).
+64 * 8 * 8: Input size (after the second pooling, the image is 8x8 with 64 channels, so 64 * 8 * 8 = 4,096 values).
+128: Outputs 128 values (reduces the data to a smaller, meaningful summary).
+It’s like summarizing all the image features into 128 numbers.
+python
+
+Copy
+        self.fc2 = nn.Linear(128, 10)
+What it does: Creates the final fully connected layer to predict the class.
+Simple explanation:
+Takes the 128 values from fc1.
+Outputs 10 values (one for each CIFAR-10 class: plane, car, etc.).
+Each output represents the model’s guess for how likely the image belongs to that class.
+It’s like the final decision layer that picks the category.
+python
+
+Copy
+    def forward(self, x):
+What it does: Defines the forward pass, which says how data flows through the network.
+Simple explanation:
+forward is the function that runs when you feed an image (x) to the model.
+It processes x through all the layers to get the final output.
+Think of it as the pipeline that transforms the input image into a prediction.
+python
+
+Copy
+        x = self.pool(torch.relu(self.conv1(x)))  # 32x32 → 16x16
+What it does: Processes the input through conv1, activates it, and pools it.
+Simple explanation:
+self.conv1(x): Runs the first convolutional layer (turns 3x32x32 → 32x32x32).
+torch.relu(...): Applies the ReLU activation (sets negative values to 0, keeps positive values; makes the model learn better).
+self.pool(...): Applies max pooling (shrinks 32x32 → 16x16 for each of the 32 feature maps).
+Result: x is now a tensor of shape (32, 16, 16).
+python
+
+Copy
+        x = self.pool(torch.relu(self.conv2(x)))  # 16x16 → 8x8
+What it does: Processes the data through conv2, activates it, and pools it again.
+Simple explanation:
+self.conv2(x): Runs the second convolutional layer (turns 32x16x16 → 64x16x16).
+torch.relu(...): Applies ReLU again.
+self.pool(...): Pools again (shrinks 16x16 → 8x8 for each of the 64 feature maps).
+Result: x is now a tensor of shape (64, 8, 8).
+python
+
+Copy
+        x = x.view(-1, 64 * 8 * 8)                # Flatten
+What it does: Flattens the data to prepare it for the fully connected layers.
+Simple explanation:
+x.view: Reshapes the tensor.
+64 * 8 * 8: The current shape (64 channels, 8x8 image) becomes a single list of 4,096 values (64 * 8 * 8 = 4,096).
+-1: Automatically figures out the batch size (number of images processed at once).
+Result: x is now a flat tensor of shape (batch_size, 4,096).
+It’s like turning a 3D image into a long 1D list.
+python
+
+Copy
+        x = torch.relu(self.fc1(x))
+What it does: Runs the data through the first fully connected layer and activates it.
+Simple explanation:
+self.fc1(x): Processes the flattened 4,096 values into 128 values.
+torch.relu(...): Applies ReLU to make the output non-negative.
+Result: x is now a tensor of shape (batch_size, 128).
+python
+
+Copy
+        x = self.fc2(x)
+What it does: Runs the data through the final layer to get class scores.
+Simple explanation:
+self.fc2(x): Takes the 128 values and outputs 10 values (one for each CIFAR-10 class).
+Result: x is now a tensor of shape (batch_size, 10), where each value is a score for a class.
+No ReLU here because these are raw scores (later used to pick the most likely class).
+python
+
+Copy
+        return x
+What it does: Returns the final output of the model.
+Simple explanation:
+Sends back the 10 class scores for each image in the batch.
+This is what the model predicts (e.g., “this image is likely a dog”).
+
+Big Picture:
+This CNN takes a CIFAR-10 image (3x32x32, RGB):
+Scans it with two convolutional layers (conv1, conv2) to find patterns.
+Shrinks it with pooling (32x32 → 16x16 → 8x8).
+Flattens it into a list (4,096 values).
+Processes it through two dense layers (fc1, fc2) to predict one of 10 classes.
+It’s like a funnel: raw image → extract features → summarize → predict class.
