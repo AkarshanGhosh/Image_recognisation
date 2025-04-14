@@ -59,3 +59,56 @@ In Summary a transformation in PyTorch is a process to modify or preprocess data
 -->Other tweaks like resizing, cropping, or augmenting.
 
 transforms.Compose to chain these operations, ensuring data is model-ready. Simple, yet powerful!
+
+
+
+CIFAR-10 Operation 
+---> trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+
+What it does: Loads the training part of the CIFAR-10 dataset (50,000 images).
+
+breakdown:
+
+-->torchvision.datasets.CIFAR10: A PyTorch tool to get the CIFAR-10 dataset.
+-->root='./data': Saves the dataset in a folder called "data" in your project.
+-->train=True: Gets the training images (not the test ones).
+-->download=True: Downloads the dataset if you don’t already have it.
+-->transform=transform: Applies the transformations (like ToTensor, Normalize) you defined earlier to each image.
+
+--->trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
+                                          shuffle=True, num_workers=0)
+ What it does: Creates a tool to feed the training data to your model in small batches.
+
+ breakdown:
+
+-->torch.utils.data.DataLoader: A PyTorch tool to handle data in chunks.
+-->trainset: Uses the training data you just loaded.
+-->batch_size=32: Sends 32 images at a time to the model (instead of one-by-one).
+-->shuffle=True: Randomly mixes the order of images each time to help the model learn better.
+-->num_workers=0: Uses the main process to load data (0 means no extra workers; keeps it simple).                                      
+
+
+---> testset = torchvision.datasets.CIFAR10(root='./data', train=False,
+                                       download=True, transform=transform)
+
+What it does: Loads the testing part of the CIFAR-10 dataset (10,000 images).
+
+breakdown:
+
+-->Same as trainset, but:
+-->train=False: Gets the test images (used to check how good the model is).
+-->Everything else (root, download, transform) works the same as before.
+
+
+--->testloader = torch.utils.data.DataLoader(testset, batch_size=32,
+                                         shuffle=False, num_workers=0)
+
+
+What it does: Creates a tool to feed the test data to your model in batches.
+
+breakdown:
+
+-->Same as trainloader, but:
+-->testset: Uses the test data.
+-->shuffle=False: Keeps the test images in their original order (no need to randomize for testing).
+-->batch_size=32 and num_workers=0 are the same as before.
