@@ -91,4 +91,4 @@ def visualize_feature_maps(model, image, layer_name):
     plt.show()
 
 # Example usage (you can try 'conv1', 'conv2', 'conv3', 'conv4')
-visualize_feature_maps(model, image_tensor, 'conv1')
+visualize_feature_maps(model, image_tensor, 'conv4')
