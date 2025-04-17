@@ -1,44 +1,59 @@
 import torch
 import torchvision
-import torchvision.transforms as transforms
+from torchvision import transforms, datasets
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # Define transformations for training and testing
-transform = transforms.Compose([
-    transforms.ToTensor(),  # Convert images to PyTorch tensors
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize between -1 and 1
+transform_train = transforms.Compose([
+    transforms.Resize((32, 32)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(10),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
+transform_test = transforms.Compose([
+    transforms.Resize((32, 32)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
 def main():
-    # Load the CIFAR-10 dataset
-    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    # Dataset base path
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'real_dataset'))
+    
+    # Only use animals and humans folders
+    train_dirs = [os.path.join(base_dir, 'train', folder) for folder in ['animals', 'humans']]
+    test_dirs = [os.path.join(base_dir, 'test', folder) for folder in ['animals', 'humans']]
 
-    # Define DataLoaders for batch processing
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=32, shuffle=True, num_workers=0)  # Change num_workers=0 for Windows
-    testloader = torch.utils.data.DataLoader(testset, batch_size=32, shuffle=False, num_workers=0)
+    # Load datasets separately and merge them
+    train_datasets = [datasets.ImageFolder(root=dir_path, transform=transform_train) for dir_path in train_dirs if os.path.exists(dir_path)]
+    test_datasets = [datasets.ImageFolder(root=dir_path, transform=transform_test) for dir_path in test_dirs if os.path.exists(dir_path)]
 
-    # Define class names for CIFAR-10 categories
-    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+    # Combine datasets
+    train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+    test_dataset = torch.utils.data.ConcatDataset(test_datasets)
 
-    # Function to visualize some images from the dataset
+    # Define DataLoaders
+    trainloader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0)
+    testloader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=0)
+
+    # Function to visualize some images
     def imshow(img):
-        img = img / 2 + 0.5  # Unnormalize (convert back to 0-1 range)
+        img = img / 2 + 0.5  # Unnormalize
         npimg = img.numpy()
-        plt.imshow(np.transpose(npimg, (1, 2, 0)))  # Convert to (H, W, C) format
+        plt.imshow(np.transpose(npimg, (1, 2, 0)))
         plt.show()
 
     # Get a batch of training images
     dataiter = iter(trainloader)
     images, labels = next(dataiter)
 
-    # Show some images
-    imshow(torchvision.utils.make_grid(images[:8]))  # Show first 8 images
-    print(' '.join(classes[labels[j]] for j in range(8)))  # Print their labels
-    
+    # Show images
+    imshow(torchvision.utils.make_grid(images[:8]))
+    print("Labels:", labels[:8])
 
-
-    
 if __name__ == "__main__":
     main()
