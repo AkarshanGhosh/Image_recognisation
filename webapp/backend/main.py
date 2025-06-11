@@ -1,165 +1,571 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+# main.py - Enhanced Multi-Model AI Backend
+import os
+import sys
+import logging
+import asyncio
+import uuid
+import zipfile
+import tempfile
 from datetime import datetime
-from typing import List, Optional
-from database import db
-from schemas import User, ProjectCreate, PredictionRequest, PredictionResponse
-from model_manager import model_manager
-from train_model_task import train_model_task
-from app_generator import CustomAppGenerator
-import cloudinary.uploader
+from typing import List, Dict, Any, Optional
+import base64
+import io
+from concurrent.futures import ThreadPoolExecutor
 
-app = FastAPI(
-    title="AI Training Platform API",
-    description="Multi-model AI training and prediction platform",
-    version="1.0.0"
+# Add the current directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from PIL import Image
+import motor.motor_asyncio
+import pymongo
+
+# Import your existing schemas
+from schemas import (
+    PredictionRequest, 
+    PredictionResponse, 
+    ImageUpload, 
+    ModelInfo,
+    TrainingRequest,
+    TrainingStatus
 )
 
+# Enhanced schemas for the full application
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+
+class MultiModelPrediction(BaseModel):
+    """Response from multiple models running in parallel"""
+    image_id: str
+    predictions: List[Dict[str, Any]]
+    processing_time: float
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class CustomClass(BaseModel):
+    """Custom class for training"""
+    class_name: str
+    metadata: Dict[str, Any]  # student_name, dob, etc.
+    images: List[Dict[str, str]]  # [{"url": "...", "type": "front"}, ...]
+
+class CustomTrainingRequest(BaseModel):
+    """Request to train custom model"""
+    model_name: str
+    classes: List[CustomClass]
+    training_config: Optional[Dict[str, Any]] = {
+        "epochs": 50,
+        "batch_size": 32,
+        "learning_rate": 0.001
+    }
+
+class UserModel(BaseModel):
+    """User's custom trained model"""
+    model_id: str
+    model_name: str
+    classes: List[str]
+    accuracy: Optional[float]
+    created_at: datetime
+    download_count: int = 0
+
+class SingleModelPrediction(BaseModel):
+    """Request for single model prediction"""
+    image: str  # base64 encoded image
+    model_name: str  # specific model to use
+
+class ModelStatus(BaseModel):
+    """Model status information"""
+    name: str
+    loaded: bool
+    classes: List[str]
+    device: str
+    file_size_mb: float
+
+# Import your model manager with better error handling
+try:
+    from model_manager import model_manager
+    MODEL_MANAGER_AVAILABLE = True
+    print("✅ Model manager loaded successfully")
+    available_models = model_manager.get_available_models()
+    print(f"📋 Available models: {available_models}")
+    
+    # Print detailed model information
+    for model_name in available_models:
+        info = model_manager.get_model_info(model_name)
+        print(f"  - {model_name}: {len(info['classes'])} classes on {info['device']}")
+        
+except ImportError as e:
+    print(f"❌ Failed to import model manager: {e}")
+    MODEL_MANAGER_AVAILABLE = False
+    model_manager = None
+except Exception as e:
+    print(f"⚠️  Model manager initialization error: {e}")
+    MODEL_MANAGER_AVAILABLE = False
+    model_manager = None
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# MongoDB connection
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URL)
+db = client.ai_app
+
+# Collections
+users_collection = db.users
+training_jobs_collection = db.training_jobs
+models_collection = db.models
+predictions_collection = db.predictions
+
+# Create FastAPI app
+app = FastAPI(
+    title="AI Multi-Model Web Application",
+    description="Full-stack AI app with multi-model prediction and custom training",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, specify your frontend URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-security = HTTPBearer()
+# Security
+security = HTTPBearer(auto_error=False)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    # Mock user
-    return {"user_id": "mock_user_id", "username": "mock_user"}
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application"""
+    logger.info("🚀 Starting AI Multi-Model Web Application...")
+
+    # Test MongoDB connection
+    try:
+        await db.command("ping")
+        logger.info("✅ MongoDB connection successful")
+    except Exception as e:
+        logger.error(f"❌ MongoDB connection failed: {e}")
+
+    if MODEL_MANAGER_AVAILABLE and model_manager:
+        logger.info("✅ Model manager initialized")
+        available_models = model_manager.get_available_models()
+        logger.info(f"📋 Available built-in models: {available_models}")
+        
+        # Print detailed model info
+        for model_name in available_models:
+            info = model_manager.get_model_info(model_name)
+            logger.info(f"  🤖 {model_name}: {len(info['classes'])} classes on {info['device']}")
+    else:
+        logger.warning("⚠️  Model manager not available - running in limited mode")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("🛑 Shutting down AI Multi-Model Web Application...")
+    if client:
+        client.close()
 
 @app.get("/")
 async def root():
-    return {"message": "AI Training Platform API", "version": "1.0.0"}
+    """Root endpoint"""
+    status = {
+        "message": "AI Multi-Model Web Application",
+        "version": "2.0.0",
+        "status": "running",
+        "features": [
+            "Multi-model parallel prediction",
+            "Single model prediction",
+            "Custom model training",
+            "Model download with web app",
+            "MongoDB integration"
+        ],
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    if MODEL_MANAGER_AVAILABLE and model_manager:
+        status["available_models"] = model_manager.get_available_models()
+        status["model_manager"] = "available"
+    else:
+        status["model_manager"] = "unavailable"
+    
+    return status
 
-@app.post("/auth/register")
-async def register(user: User):
-    existing_user = await db.users.find_one({"username": user.username})
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already exists")
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    db_status = "healthy"
+    try:
+        await db.command("ping")
+    except:
+        db_status = "unhealthy"
 
-    user_doc = {
-        "username": user.username,
-        "email": user.email,
-        "password": "hashed_password",  # TODO: hash properly
-        "subscription": user.subscription,
-        "createdAt": datetime.utcnow(),
-        "usage": {"modelsCreated": 0, "trainingHours": 0, "predictions": 0}
+    status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "model_manager": MODEL_MANAGER_AVAILABLE,
+        "database": db_status,
+        "components": {
+            "models": "available" if MODEL_MANAGER_AVAILABLE else "unavailable",
+            "database": db_status,
+            "api": "healthy"
+        }
     }
 
-    result = await db.users.insert_one(user_doc)
-    return {"message": "User created successfully", "user_id": str(result.inserted_id)}
+    if MODEL_MANAGER_AVAILABLE and model_manager:
+        status["available_models"] = model_manager.get_available_models()
 
-@app.post("/predict")
-async def predict(request: PredictionRequest, current_user=Depends(get_current_user)):
-    start_time = datetime.utcnow()
-    results = await model_manager.predict(request.imageData, request.projectId)
-    inference_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+    return status
 
-    prediction_doc = {
-        "userId": current_user["user_id"],
-        "projectId": request.projectId,
-        "inputType": request.inputType,
-        "results": results,
-        "inferenceTime": inference_time,
-        "timestamp": start_time
-    }
-    await db.predictions.insert_one(prediction_doc)
-    await db.users.update_one(
-        {"_id": current_user["user_id"]},
-        {"$inc": {"usage.predictions": 1}}
-    )
+# ============ MODEL INFORMATION ENDPOINTS ============
 
-    return PredictionResponse(
-        results=results,
-        inferenceTime=inference_time,
-        timestamp=start_time
-    )
-
-@app.post("/projects")
-async def create_project(project: ProjectCreate, current_user=Depends(get_current_user)):
-    project_doc = {
-        "userId": current_user["user_id"],
-        "projectName": project.projectName,
-        "description": project.description,
-        "modelType": project.modelType,
-        "classes": project.classes,
-        "config": project.config,
-        "status": "creating",
-        "createdAt": datetime.utcnow(),
-        "updatedAt": datetime.utcnow()
+@app.get("/models/info")
+async def get_models_info():
+    """Get information about available models"""
+    if not MODEL_MANAGER_AVAILABLE or not model_manager:
+        return {
+            "error": "Model manager not available", 
+            "models": [],
+            "total_models": 0
+        }
+    
+    models_info = []
+    for model_name in model_manager.get_available_models():
+        info = model_manager.get_model_info(model_name)
+        # Add file size information
+        try:
+            file_size = os.path.getsize(info['path']) / (1024 * 1024)  # MB
+            info['file_size_mb'] = round(file_size, 1)
+        except:
+            info['file_size_mb'] = 0
+        models_info.append(info)
+    
+    return {
+        "models": models_info,
+        "total_models": len(models_info),
+        "status": "success"
     }
 
-    result = await db.projects.insert_one(project_doc)
-    return {"message": "Project created", "project_id": str(result.inserted_id)}
+@app.get("/models/status")
+async def get_models_status():
+    """Get detailed status of all models"""
+    if not MODEL_MANAGER_AVAILABLE or not model_manager:
+        return {"error": "Model manager not available"}
+    
+    models_status = []
+    for model_name in model_manager.get_available_models():
+        info = model_manager.get_model_info(model_name)
+        try:
+            file_size = os.path.getsize(info['path']) / (1024 * 1024)
+        except:
+            file_size = 0
+            
+        models_status.append(ModelStatus(
+            name=model_name,
+            loaded=True,
+            classes=info['classes'],
+            device=info['device'],
+            file_size_mb=round(file_size, 1)
+        ))
+    
+    return {
+        "models": models_status,
+        "total_loaded": len(models_status)
+    }
 
-@app.get("/projects")
-async def get_projects(current_user=Depends(get_current_user)):
-    projects = []
-    async for project in db.projects.find({"userId": current_user["user_id"]}):
-        project["_id"] = str(project["_id"])
-        projects.append(project)
-    return projects
+# ============ PREDICTION ENDPOINTS ============
 
-@app.post("/projects/{project_id}/training-data")
-async def upload_training_data(
-    project_id: str,
-    files: List[UploadFile] = File(...),
-    className: str = None,
-    metadata: str = None,
-    current_user=Depends(get_current_user)
-):
-    uploaded_images = []
-
-    for file in files:
-        result = cloudinary.uploader.upload(
-            file.file,
-            folder=f"ai_training/{current_user['user_id']}/{project_id}",
-            public_id=f"{className}_{len(uploaded_images)}"
+@app.post("/predict/multi", response_model=MultiModelPrediction)
+async def predict_multi_models(request: PredictionRequest):
+    """Run prediction on all available models simultaneously"""
+    if not MODEL_MANAGER_AVAILABLE or not model_manager:
+        raise HTTPException(
+            status_code=503, 
+            detail="Model manager not available. Please check server logs."
         )
-        uploaded_images.append({
-            "imageId": result["public_id"],
-            "originalName": file.filename,
-            "imageUrl": result["secure_url"],
-            "thumbnailUrl": result["secure_url"].replace("/upload/", "/upload/w_150,h_150,c_thumb/"),
-            "size": len(await file.read()),
-            "dimensions": {"width": result["width"], "height": result["height"]},
-            "uploadedAt": datetime.utcnow(),
-            "tags": [],
-            "isValidated": False
-        })
 
-    training_data_doc = {
-        "projectId": project_id,
-        "userId": current_user["user_id"],
-        "className": className,
-        "metadata": eval(metadata) if metadata else {},
-        "images": uploaded_images,
-        "createdAt": datetime.utcnow(),
-        "updatedAt": datetime.utcnow()
+    try:
+        start_time = datetime.now()
+        image_id = str(uuid.uuid4())
+        
+        # Decode base64 image
+        try:
+            image_data = base64.b64decode(request.image)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid base64 image: {str(e)}")
+        
+        image_stream = io.BytesIO(image_data)
+        
+        # Validate image
+        try:
+            test_image = Image.open(io.BytesIO(image_data))
+            test_image.verify()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
+        
+        # Reset stream position
+        image_stream.seek(0)
+        
+        # Run predictions on all models
+        results = model_manager.predict_all(image_stream)
+        
+        # Check for errors in results
+        if isinstance(results, dict) and "error" in results:
+            raise HTTPException(status_code=400, detail=results["error"])
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        # Save to database
+        try:
+            await predictions_collection.insert_one({
+                "image_id": image_id,
+                "predictions": results,
+                "processing_time": processing_time,
+                "prediction_type": "multi_model",
+                "created_at": datetime.now()
+            })
+        except Exception as e:
+            logger.warning(f"Failed to save prediction to database: {e}")
+
+        # Format response
+        formatted_predictions = []
+        for model_name, result in results.items():
+            if isinstance(result, dict) and "error" not in result:
+                formatted_predictions.append({
+                    "model_type": model_name,
+                    "prediction": result["prediction"],
+                    "confidence": result["confidence"],
+                    "all_probabilities": result.get("all_probabilities", {})
+                })
+            else:
+                error_msg = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
+                formatted_predictions.append({
+                    "model_type": model_name,
+                    "error": error_msg
+                })
+
+        return MultiModelPrediction(
+            image_id=image_id,
+            predictions=formatted_predictions,
+            processing_time=processing_time
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Multi-model prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+@app.post("/predict/single")
+async def predict_single_model(request: SingleModelPrediction):
+    """Run prediction on a specific model"""
+    if not MODEL_MANAGER_AVAILABLE or not model_manager:
+        raise HTTPException(status_code=503, detail="Model manager not available")
+    
+    # Check if model exists
+    available_models = model_manager.get_available_models()
+    if request.model_name not in available_models:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Model '{request.model_name}' not found. Available models: {available_models}"
+        )
+    
+    try:
+        start_time = datetime.now()
+        image_id = str(uuid.uuid4())
+        
+        # Decode and validate image
+        image_data = base64.b64decode(request.image)
+        image_stream = io.BytesIO(image_data)
+        
+        # Run prediction on all models (we'll filter for the specific one)
+        all_results = model_manager.predict_all(image_stream)
+        
+        if request.model_name not in all_results:
+            raise HTTPException(status_code=500, detail="Model prediction failed")
+        
+        result = all_results[request.model_name]
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        # Save to database
+        try:
+            await predictions_collection.insert_one({
+                "image_id": image_id,
+                "model_name": request.model_name,
+                "prediction": result,
+                "processing_time": processing_time,
+                "prediction_type": "single_model",
+                "created_at": datetime.now()
+            })
+        except Exception as e:
+            logger.warning(f"Failed to save prediction to database: {e}")
+        
+        return {
+            "image_id": image_id,
+            "model_name": request.model_name,
+            "prediction": result.get("prediction"),
+            "confidence": result.get("confidence"),
+            "all_probabilities": result.get("all_probabilities", {}),
+            "processing_time": processing_time,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Single model prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+@app.post("/predict/upload")
+async def predict_from_upload(
+    file: UploadFile = File(...),
+    model_name: Optional[str] = Form(None)
+):
+    """Upload an image file and run prediction"""
+    if not MODEL_MANAGER_AVAILABLE or not model_manager:
+        raise HTTPException(status_code=503, detail="Model manager not available")
+    
+    # Validate file type
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Convert to base64 for processing
+        image_b64 = base64.b64encode(file_content).decode('utf-8')
+        
+        if model_name:
+            # Single model prediction
+            request = SingleModelPrediction(image=image_b64, model_name=model_name)
+            return await predict_single_model(request)
+        else:
+            # Multi-model prediction
+            request = PredictionRequest(image=image_b64)
+            return await predict_multi_models(request)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload prediction failed: {str(e)}")
+
+# ============ STATISTICS AND ADMIN ENDPOINTS ============
+
+@app.get("/admin/stats")
+async def get_admin_stats():
+    """Get admin statistics"""
+    try:
+        total_users = await users_collection.count_documents({})
+        total_models = await models_collection.count_documents({})
+        total_predictions = await predictions_collection.count_documents({})
+        
+        # Get predictions by type
+        multi_model_predictions = await predictions_collection.count_documents({
+            "prediction_type": "multi_model"
+        })
+        single_model_predictions = await predictions_collection.count_documents({
+            "prediction_type": "single_model"
+        })
+        
+        # Get recent predictions
+        recent_predictions = await predictions_collection.find(
+            {}, 
+            {"_id": 0, "created_at": 1, "processing_time": 1, "prediction_type": 1}
+        ).sort("created_at", -1).limit(10).to_list(length=10)
+
+        return {
+            "total_users": total_users,
+            "total_models": total_models,
+            "total_predictions": total_predictions,
+            "prediction_breakdown": {
+                "multi_model": multi_model_predictions,
+                "single_model": single_model_predictions
+            },
+            "recent_predictions": recent_predictions,
+            "available_models": model_manager.get_available_models() if MODEL_MANAGER_AVAILABLE else [],
+            "status": "success",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Admin stats error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+@app.get("/stats/predictions")
+async def get_prediction_stats():
+    """Get prediction statistics"""
+    try:
+        # Total predictions
+        total = await predictions_collection.count_documents({})
+        
+        # Predictions by date (last 7 days)
+        from datetime import timedelta
+        week_ago = datetime.now() - timedelta(days=7)
+        recent = await predictions_collection.count_documents({
+            "created_at": {"$gte": week_ago}
+        })
+        
+        # Average processing time
+        pipeline = [
+            {"$group": {
+                "_id": None,
+                "avg_processing_time": {"$avg": "$processing_time"},
+                "min_processing_time": {"$min": "$processing_time"},
+                "max_processing_time": {"$max": "$processing_time"}
+            }}
+        ]
+        
+        processing_stats = await predictions_collection.aggregate(pipeline).to_list(length=1)
+        
+        stats = {
+            "total_predictions": total,
+            "recent_predictions": recent,
+            "processing_stats": processing_stats[0] if processing_stats else None,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Prediction stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============ UTILITY ENDPOINTS ============
+
+@app.get("/test")
+async def test_endpoint():
+    """Test endpoint to verify API is working"""
+    return {
+        "message": "API is working!",
+        "timestamp": datetime.now().isoformat(),
+        "model_manager_available": MODEL_MANAGER_AVAILABLE,
+        "available_models": model_manager.get_available_models() if MODEL_MANAGER_AVAILABLE else []
     }
 
-    await db.trainingData.insert_one(training_data_doc)
-    return {"message": "Training data uploaded successfully", "imageCount": len(uploaded_images)}
-
-@app.post("/projects/{project_id}/train")
-async def start_training(project_id: str, background_tasks: BackgroundTasks, current_user=Depends(get_current_user)):
-    await db.projects.update_one(
-        {"_id": project_id},
-        {"$set": {"status": "training", "updatedAt": datetime.utcnow()}}
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("🚀 Starting AI Multi-Model Web Application")
+    print("=" * 50)
+    print(f"📊 Model Manager Available: {MODEL_MANAGER_AVAILABLE}")
+    if MODEL_MANAGER_AVAILABLE and model_manager:
+        models = model_manager.get_available_models()
+        print(f"🤖 Available Models: {models}")
+    print("=" * 50)
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        log_level="info",
+        reload=False  # Set to True for development
     )
-    background_tasks.add_task(train_model_task, project_id, current_user["user_id"])
-    return {"message": "Training started", "project_id": project_id}
-
-@app.get("/projects/{project_id}/download")
-async def download_model_app(project_id: str, current_user=Depends(get_current_user)):
-    project = await db.projects.find_one({"_id": project_id, "userId": current_user["user_id"]})
-    if not project or project['status'] != 'completed':
-        raise HTTPException(status_code=404, detail="Project not found or not completed")
-
-    app_generator = CustomAppGenerator(project)
-    zip_file_path = await app_generator.generate()
-
-    return {"download_url": zip_file_path, "expires_at": datetime.utcnow()}
