@@ -3,3 +3,5 @@ __pycache__/
 data/ 
 real_dataset/
 Emotions Dataset/
+# Environment variables
+.env
