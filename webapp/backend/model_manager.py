@@ -5,7 +5,7 @@ from PIL import Image
 import base64
 import io
 from database import db
-from models import ImprovedCNN  # Assuming this is defined in your models directory
+from models.improved_cnn import ImprovedCNN
 
 class ModelManager:
     def __init__(self):

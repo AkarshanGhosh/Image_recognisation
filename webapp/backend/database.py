@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # MongoDB client setup using Atlas connection string
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb+srv://ronighosh494:RoniEmpire%4028@userdetail.flx0d.mongodb.net/?retryWrites=true&w=majority&appName=UserDetail")
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb+srv://ronighosh494:<roniempire>@userdetail.flx0d.mongodb.net/?retryWrites=true&w=majority&appName=UserDetail")
 mongodb_client = AsyncIOMotorClient(MONGODB_URL)
 db = mongodb_client.UserDetail  # Use the actual database name on Atlas
 
