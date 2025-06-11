@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# MongoDB client setup
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+# MongoDB client setup using Atlas connection string
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb+srv://ronighosh494:RoniEmpire%4028@userdetail.flx0d.mongodb.net/?retryWrites=true&w=majority&appName=UserDetail")
 mongodb_client = AsyncIOMotorClient(MONGODB_URL)
-db = mongodb_client.ai_platform
+db = mongodb_client.UserDetail  # Use the actual database name on Atlas
 
 # Redis client for caching and Celery broker
 redis_host = os.getenv("REDIS_HOST", "localhost")
