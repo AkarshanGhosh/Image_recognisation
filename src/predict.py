@@ -6,19 +6,12 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from PIL import Image, ImageTk
+from PIL import Image
 import os
 import sys
 import numpy as np
 import argparse
 import time
-import cv2
-import threading
-from flask import Flask, request, jsonify, render_template_string
-import base64
-import io
-import json
-from werkzeug.serving import make_server
 
 # Define the CNN model architecture (must match the training architecture)
 class ImprovedCNN(nn.Module):
@@ -89,16 +82,8 @@ MODEL_CONFIGS = {
     }
 }
 
-# Global variables for web server
-flask_app = None
-web_server = None
-current_model = None
-current_classes = None
-current_device = None
-current_model_type = None
-
 # Function to load the model
-def load_model(model_type, model_path=None, test_dir=None):
+def load_model(model_type, model_path, test_dir=None):
     """Load a trained model from disk"""
     # Get project root directory
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -148,30 +133,14 @@ def load_model(model_type, model_path=None, test_dir=None):
                 
                 if not os.path.exists(test_dir):
                     print(f"❌ Alternative directory not found: {test_dir}")
-                    # Try current directory structure
-                    test_dir = os.path.join(project_root, "dataset", "test", "animals")
-                    print(f"Trying current directory structure: {test_dir}")
-                    
-                    if not os.path.exists(test_dir):
-                        # Fallback to predefined classes
-                        print("❌ Could not find dataset directory, using fallback classes")
-                        classes = ['cat', 'dog', 'bird', 'fish']  # Common animal classes
-                    else:
-                        classes = [d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d))]
-                        classes.sort()
-                else:
-                    classes = [d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d))]
-                    classes.sort()
-            else:
-                classes = [d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d))]
-                classes.sort()
+                    return None, None, None
             
+            classes = [d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d))]
+            classes.sort()  # Ensure consistent order
             print(f"Found classes: {classes}")
         except Exception as e:
             print(f"❌ Error determining classes from directory: {e}")
-            # Fallback classes
-            classes = ['cat', 'dog', 'bird', 'fish']
-            print(f"Using fallback classes: {classes}")
+            return None, None, None
     
     # Ensure we have valid classes
     if not classes:
@@ -204,16 +173,10 @@ def load_model(model_type, model_path=None, test_dir=None):
         return None, None, None
 
 # Function to make a prediction
-def predict_image(image, model, classes, device):
+def predict_image(image_path, model, classes, device):
     try:
-        # If image is a numpy array (from camera), convert to PIL
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        elif isinstance(image, str):
-            # If it's a file path
-            image = Image.open(image).convert('RGB')
-        
-        # Preprocess the image
+        # Load and preprocess the image
+        image = Image.open(image_path).convert('RGB')
         img_tensor = pred_transform(image).unsqueeze(0).to(device)
         
         # Get model prediction
@@ -232,713 +195,395 @@ def predict_image(image, model, classes, device):
         print(f"❌ Error during prediction: {e}")
         return None, None, None
 
-# Web application HTML template with model selection
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Classification Web App</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+# Class for the prediction application GUI
+class PredictionApp:
+    def __init__(self, root, available_models):
+        self.root = root
+        self.available_models = available_models
+        self.model = None
+        self.classes = None
+        self.device = None
+        self.current_model_type = None
+        self.current_image_path = None
+        
+        # Set window properties
+        self.root.title("Image Classification")
+        self.root.geometry("1000x850")  # Increased height to accommodate model selector
+        self.root.configure(bg="#f0f0f0")
+        
+        # Create main frame
+        self.main_frame = tk.Frame(root, bg="#f0f0f0")
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Create header
+        self.header_label = tk.Label(
+            self.main_frame, 
+            text="Image Classification", 
+            font=("Arial", 24, "bold"),
+            bg="#f0f0f0"
+        )
+        self.header_label.pack(pady=(0, 10))
+        
+        # Create model selection frame
+        self.model_frame = tk.Frame(self.main_frame, bg="#f0f0f0")
+        self.model_frame.pack(fill=tk.X, pady=10)
+        
+        # Add model selection label
+        tk.Label(
+            self.model_frame,
+            text="Select Model:",
+            font=("Arial", 14),
+            bg="#f0f0f0"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Add model selection dropdown
+        self.model_var = tk.StringVar(value=list(self.available_models.keys())[0])
+        self.model_dropdown = ttk.Combobox(
+            self.model_frame,
+            textvariable=self.model_var,
+            values=list(self.available_models.keys()),
+            font=("Arial", 12),
+            state="readonly",
+            width=15
+        )
+        self.model_dropdown.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Add model load button
+        self.load_model_button = tk.Button(
+            self.model_frame,
+            text="Load Model",
+            font=("Arial", 12),
+            command=self.load_selected_model,
+            bg="#4285F4",
+            fg="white",
+            padx=10,
+            pady=5
+        )
+        self.load_model_button.pack(side=tk.LEFT)
+        
+        # Create button frame
+        self.button_frame = tk.Frame(self.main_frame, bg="#f0f0f0")
+        self.button_frame.pack(fill=tk.X, pady=10)
+        
+        # Add select image button (initially disabled)
+        self.select_button = tk.Button(
+            self.button_frame,
+            text="Select Image",
+            font=("Arial", 14),
+            command=self.select_image,
+            bg="#4CAF50",
+            fg="white",
+            padx=20,
+            pady=10,
+            relief=tk.RAISED,
+            borderwidth=2,
+            state=tk.DISABLED
+        )
+        self.select_button.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Add quit button
+        self.quit_button = tk.Button(
+            self.button_frame,
+            text="Quit",
+            font=("Arial", 14),
+            command=self.quit_application,
+            bg="#F44336",
+            fg="white",
+            padx=20,
+            pady=10,
+            relief=tk.RAISED,
+            borderwidth=2
+        )
+        self.quit_button.pack(side=tk.RIGHT)
+        
+        # Create content frame
+        self.content_frame = tk.Frame(self.main_frame, bg="#f0f0f0")
+        self.content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Create a frame for the figure
+        self.figure_frame = tk.Frame(self.content_frame, bg="#f0f0f0")
+        self.figure_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create matplotlib figure for the image and predictions
+        self.fig = plt.figure(figsize=(10, 6))
+        self.canvas = FigureCanvasTkAgg(self.fig, self.figure_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Create feedback frame with a title
+        self.feedback_title = tk.Label(
+            self.main_frame,
+            text="Was the prediction correct?",
+            font=("Arial", 16, "bold"),
+            bg="#f0f0f0"
+        )
+        self.feedback_title.pack(pady=(15, 5))
+        
+        # Create feedback frame
+        self.feedback_frame = tk.Frame(self.main_frame, bg="#f0f0f0")
+        self.feedback_frame.pack(fill=tk.X, pady=10)
+        
+        # Add correct button
+        self.correct_button = tk.Button(
+            self.feedback_frame,
+            text="Correct ✓",
+            font=("Arial", 14),
+            command=lambda: self.record_feedback(True),
+            bg="#4CAF50",
+            fg="white",
+            state=tk.DISABLED,
+            padx=25,
+            pady=10
+        )
+        self.correct_button.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Add incorrect button
+        self.incorrect_button = tk.Button(
+            self.feedback_frame,
+            text="Incorrect ✗",
+            font=("Arial", 14),
+            command=lambda: self.record_feedback(False),
+            bg="#F44336",
+            fg="white",
+            state=tk.DISABLED,
+            padx=25,
+            pady=10
+        )
+        self.incorrect_button.pack(side=tk.LEFT)
+        
+        # Stats label
+        self.stats_label = tk.Label(
+            self.main_frame,
+            text="Total: 0 | Correct: 0 | Incorrect: 0 | Accuracy: 0.00%",
+            font=("Arial", 14, "bold"),
+            bg="#f0f0f0"
+        )
+        self.stats_label.pack(pady=10)
+        
+        # Status message
+        self.status_label = tk.Label(
+            self.main_frame,
+            text="Please load a model to start",
+            font=("Arial", 12, "italic"),
+            fg="#555555",
+            bg="#f0f0f0"
+        )
+        self.status_label.pack(pady=(0, 10))
+        
+        # Set up class variables
+        self.current_prediction = None
+    
+    def load_selected_model(self):
+        """Load the model selected from the dropdown"""
+        model_type = self.model_var.get()
+        
+        # Update status
+        self.status_label.config(text=f"Loading {model_type} model...")
+        self.root.update()
+        
+        # Reset prediction stats for new model
+        global prediction_stats
+        prediction_stats = {
+            'total': 0,
+            'correct': 0,
+            'incorrect': 0,
+            'class_predictions': {},
+            'class_correct': {}
         }
         
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+        # Load model
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(project_root)
         
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
+        config = MODEL_CONFIGS[model_type]
+        model_path = os.path.join(project_root, config['model_path'])
         
-        .header {
-            background: linear-gradient(45deg, #4285F4, #34A853);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
+        # Determine test directory based on directory structure
+        test_dir = None
+        if model_type == 'animals':
+            # Try to find the test directory in the parent directory (main project directory)
+            test_dir = os.path.join(parent_dir, 'real_dataset', 'test', 'animals')
+            if not os.path.exists(test_dir):
+                test_dir = os.path.join(parent_dir, 'real_dataset', 'train', 'animals')
         
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
+        self.model, self.classes, self.device = load_model(model_type, model_path, test_dir)
         
-        .content {
-            padding: 40px;
-        }
+        if self.model:
+            self.current_model_type = model_type
+            self.status_label.config(text=f"{model_type.capitalize()} model loaded successfully. Please select an image.")
+            self.select_button.config(state=tk.NORMAL)
+            self.stats_label.config(text="Total: 0 | Correct: 0 | Incorrect: 0 | Accuracy: 0.00%")
+        else:
+            self.status_label.config(text=f"Error loading {model_type} model. Please check the model file or directory structure.")
+            self.select_button.config(state=tk.DISABLED)
+    
+    def select_image(self):
+        """Open a file dialog to select an image"""
+        filetypes = [
+            ("Image files", "*.jpg *.jpeg *.png *.bmp *.gif"),
+            ("All files", "*.*")
+        ]
         
-        .model-section {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 15px;
-        }
+        filepath = filedialog.askopenfilename(
+            title="Select Image",
+            filetypes=filetypes
+        )
         
-        .model-select {
-            margin: 20px 0;
-        }
+        if filepath:
+            self.current_image_path = filepath
+            self.predict_and_display(filepath)
+    
+    def predict_and_display(self, image_path):
+        """Run prediction and display results"""
+        # Update status
+        self.status_label.config(text="Analyzing image...")
+        self.root.update()
         
-        .model-select select {
-            padding: 10px 20px;
-            font-size: 16px;
-            border: 2px solid #ddd;
-            border-radius: 10px;
-            background: white;
-            margin-right: 10px;
-        }
+        # Run prediction
+        image, prediction, confidence_scores = predict_image(
+            image_path, self.model, self.classes, self.device
+        )
         
-        .load-model-btn {
-            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 25px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        
-        .load-model-btn:hover {
-            transform: translateY(-2px);
-        }
-        
-        .upload-section {
-            text-align: center;
-            margin-bottom: 30px;
-            opacity: 0.5;
-            pointer-events: none;
-        }
-        
-        .upload-section.enabled {
-            opacity: 1;
-            pointer-events: auto;
-        }
-        
-        .upload-area {
-            border: 3px dashed #ddd;
-            border-radius: 15px;
-            padding: 40px;
-            margin: 20px 0;
-            background: #f9f9f9;
-            transition: all 0.3s ease;
-        }
-        
-        .upload-area:hover {
-            border-color: #4285F4;
-            background: #f0f7ff;
-        }
-        
-        .upload-area.dragover {
-            border-color: #34A853;
-            background: #f0fff0;
-        }
-        
-        .upload-btn {
-            background: linear-gradient(45deg, #4285F4, #34A853);
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 25px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        
-        .upload-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
-        }
-        
-        .camera-section {
-            margin: 30px 0;
-            text-align: center;
-        }
-        
-        .camera-btn {
-            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 25px;
-            font-size: 16px;
-            cursor: pointer;
-            margin: 10px;
-            transition: transform 0.2s;
-        }
-        
-        .camera-btn:hover {
-            transform: translateY(-2px);
-        }
-        
-        #cameraVideo {
-            max-width: 100%;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            margin: 20px 0;
-        }
-        
-        .result-section {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 15px;
-            display: none;
-        }
-        
-        .prediction-result {
-            text-align: center;
-            margin: 20px 0;
-        }
-        
-        .prediction-result h3 {
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 1.5em;
-        }
-        
-        .confidence-bars {
-            margin: 20px 0;
-        }
-        
-        .confidence-item {
-            margin: 10px 0;
-            background: white;
-            border-radius: 10px;
-            padding: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        
-        .confidence-label {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        
-        .confidence-bar {
-            background: #e0e0e0;
-            border-radius: 5px;
-            height: 20px;
-            overflow: hidden;
-        }
-        
-        .confidence-fill {
-            height: 100%;
-            background: linear-gradient(45deg, #4285F4, #34A853);
-            border-radius: 5px;
-            transition: width 0.5s ease;
-        }
-        
-        .loading {
-            text-align: center;
-            color: #666;
-            font-style: italic;
-        }
-        
-        .error {
-            color: #d32f2f;
-            text-align: center;
-            padding: 20px;
-            background: #ffebee;
-            border-radius: 10px;
-            margin: 20px 0;
-        }
-        
-        .success {
-            color: #388e3c;
-            text-align: center;
-            padding: 20px;
-            background: #e8f5e8;
-            border-radius: 10px;
-            margin: 20px 0;
-        }
-        
-        #imagePreview {
-            max-width: 400px;
-            max-height: 400px;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            margin: 20px auto;
-            display: block;
-        }
-        
-        .status-message {
-            text-align: center;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 10px;
-            font-weight: bold;
-        }
-        
-        .status-info {
-            background: #e3f2fd;
-            color: #1976d2;
-        }
-        
-        .status-success {
-            background: #e8f5e8;
-            color: #388e3c;
-        }
-        
-        .status-warning {
-            background: #fff3e0;
-            color: #f57c00;
-        }
-        
-        @media (max-width: 768px) {
-            .content {
-                padding: 20px;
-            }
+        if image and prediction and confidence_scores:
+            # Store current prediction
+            self.current_prediction = prediction
             
-            .header h1 {
-                font-size: 2em;
-            }
+            # Clear previous figure
+            self.fig.clear()
             
-            #imagePreview {
-                max-width: 100%;
-            }
-        }
-        
-        .hidden {
-            display: none !important;
-        }
-        
-        .disabled {
-            opacity: 0.5;
-            pointer-events: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎯 Image Classification</h1>
-            <p>First select a model, then upload an image or use your camera for classification</p>
-        </div>
-        
-        <div class="content">
-            <!-- Model Selection Section -->
-            <div class="model-section">
-                <h3>🤖 Select Classification Model</h3>
-                <div class="model-select">
-                    <select id="modelSelect">
-                        <option value="">-- Choose a Model --</option>
-                        <option value="animals">Animal Classification</option>
-                        <option value="gender">Gender Classification</option>
-                    </select>
-                    <button class="load-model-btn" id="loadModelBtn">Load Model</button>
-                </div>
-                <div id="statusMessage" class="status-message status-info">
-                    Please select and load a model to start classification
-                </div>
-            </div>
+            # Create two subplots - one for image, one for bar chart
+            ax1 = self.fig.add_subplot(1, 2, 1)
+            ax2 = self.fig.add_subplot(1, 2, 2)
             
-            <!-- File Upload Section -->
-            <div class="upload-section" id="uploadSection">
-                <div class="upload-area" id="uploadArea">
-                    <h3>📁 Choose an Image</h3>
-                    <p>Drag and drop an image here or click to browse</p>
-                    <input type="file" id="imageInput" accept="image/*" style="display: none;">
-                    <br><br>
-                    <button class="upload-btn" onclick="document.getElementById('imageInput').click()">
-                        Browse Files
-                    </button>
-                </div>
-            </div>
+            # Display image
+            ax1.imshow(image)
+            ax1.set_title(f"Prediction: {prediction}")
+            ax1.axis('off')
             
-            <!-- Camera Section -->
-            <div class="camera-section disabled" id="cameraSection">
-                <h3>📷 Or Use Your Camera</h3>
-                <button class="camera-btn" id="startCameraBtn">Start Camera</button>
-                <button class="camera-btn hidden" id="stopCameraBtn">Stop Camera</button>
-                <button class="camera-btn hidden" id="captureBtn">Capture & Predict</button>
-                <br>
-                <video id="cameraVideo" class="hidden" autoplay playsinline></video>
-                <canvas id="captureCanvas" class="hidden"></canvas>
-            </div>
+            # Create bar chart of confidence scores
+            sorted_scores = sorted(confidence_scores.items(), key=lambda x: x[1], reverse=True)
+            classes = [item[0] for item in sorted_scores]
+            scores = [item[1] for item in sorted_scores]
             
-            <!-- Results Section -->
-            <div class="result-section" id="resultSection">
-                <div id="loadingDiv" class="loading hidden">
-                    🔄 Analyzing image...
-                </div>
+            bars = ax2.bar(classes, scores, color=['#4285F4' if cls == prediction else '#A0A0A0' for cls in classes])
+            ax2.set_ylabel('Confidence (%)')
+            ax2.set_title('Class Predictions')
+            ax2.set_ylim([0, 100])
+            
+            # Add percentage labels above bars
+            for bar in bars:
+                height = bar.get_height()
+                ax2.annotate(f'{height:.1f}%',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3),  # 3 points vertical offset
+                            textcoords="offset points",
+                            ha='center', va='bottom',
+                            fontsize=9)
+            
+            # Rotate x-axis labels for better readability if needed
+            if len(classes) > 3:
+                plt.setp(ax2.get_xticklabels(), rotation=45, ha='right')
+            
+            # Update the canvas
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+            # Enable feedback buttons
+            self.correct_button.config(state=tk.NORMAL)
+            self.incorrect_button.config(state=tk.NORMAL)
+            
+            # Update status
+            self.status_label.config(text=f"Prediction complete. Model says: {prediction}")
+            
+            # Update statistics display
+            global prediction_stats
+            prediction_stats['total'] += 1
+            prediction_stats['class_predictions'][prediction] += 1
+            self.update_stats_display()
+        else:
+            # Handle prediction failure
+            self.status_label.config(text="Error analyzing image. Please try another image.")
+            messagebox.showerror("Prediction Error", "Could not analyze the selected image.")
+
+    def record_feedback(self, is_correct):
+        """Record user feedback on prediction accuracy"""
+        if self.current_prediction:
+            global prediction_stats
+            
+            if is_correct:
+                prediction_stats['correct'] += 1
+                prediction_stats['class_correct'][self.current_prediction] += 1
+                feedback_msg = "✓ Feedback recorded: Prediction was correct!"
+            else:
+                prediction_stats['incorrect'] += 1
+                feedback_msg = "✗ Feedback recorded: Prediction was incorrect."
                 
-                <div id="errorDiv" class="error hidden"></div>
+                # Optionally ask for correct class if prediction was wrong
+                if len(self.classes) > 2:  # Only for multi-class problems
+                    correct_class = simpledialog.askstring(
+                        "Correct Class",
+                        f"What was the correct class?\nOptions: {', '.join(self.classes)}",
+                        parent=self.root
+                    )
+                    
+                    if correct_class and correct_class in self.classes:
+                        feedback_msg += f" (Correct class: {correct_class})"
+            
+            # Update status and stats display
+            self.status_label.config(text=feedback_msg)
+            self.update_stats_display()
+            
+            # Reset buttons for next prediction
+            self.correct_button.config(state=tk.DISABLED)
+            self.incorrect_button.config(state=tk.DISABLED)
+    
+    def update_stats_display(self):
+        """Update the statistics display label"""
+        global prediction_stats
+        
+        total = prediction_stats['total']
+        correct = prediction_stats['correct']
+        incorrect = prediction_stats['incorrect']
+        
+        if total > 0:
+            accuracy = (correct / total) * 100
+            stats_text = f"Total: {total} | Correct: {correct} | Incorrect: {incorrect} | Accuracy: {accuracy:.2f}%"
+        else:
+            stats_text = "Total: 0 | Correct: 0 | Incorrect: 0 | Accuracy: 0.00%"
+        
+        self.stats_label.config(text=stats_text)
+
+    def quit_application(self):
+        """Exit the application and show final statistics"""
+        global prediction_stats
+        
+        # Create final statistics message
+        total = prediction_stats['total']
+        
+        if total > 0:
+            accuracy = (prediction_stats['correct'] / total) * 100
+            message = f"Session Statistics:\n\n"
+            message += f"Total predictions: {total}\n"
+            message += f"Correct: {prediction_stats['correct']} ({(prediction_stats['correct']/total)*100:.2f}%)\n"
+            message += f"Incorrect: {prediction_stats['incorrect']} ({(prediction_stats['incorrect']/total)*100:.2f}%)\n\n"
+            
+            # Add per-class statistics
+            message += "Class Performance:\n"
+            for cls in self.classes:
+                predictions = prediction_stats['class_predictions'].get(cls, 0)
+                correct = prediction_stats['class_correct'].get(cls, 0)
                 
-                <div id="resultDiv" class="hidden">
-                    <img id="imagePreview" alt="Uploaded image">
-                    <div class="prediction-result">
-                        <h3 id="predictionTitle">Prediction Result</h3>
-                        <div class="confidence-bars" id="confidenceBars"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let stream = null;
-        let isCapturing = false;
-        let modelLoaded = false;
-        
-        // Model management
-        const modelSelect = document.getElementById('modelSelect');
-        const loadModelBtn = document.getElementById('loadModelBtn');
-        const statusMessage = document.getElementById('statusMessage');
-        const uploadSection = document.getElementById('uploadSection');
-        const cameraSection = document.getElementById('cameraSection');
-        
-        loadModelBtn.addEventListener('click', loadModel);
-        
-        async function loadModel() {
-            const selectedModel = modelSelect.value;
-            if (!selectedModel) {
-                showStatus('Please select a model first', 'warning');
-                return;
-            }
+                if predictions > 0:
+                    class_accuracy = (correct / predictions) * 100
+                    message += f"{cls}: {correct}/{predictions} correct ({class_accuracy:.2f}%)\n"
+                else:
+                    message += f"{cls}: No predictions\n"
             
-            showStatus('Loading model...', 'info');
-            loadModelBtn.disabled = true;
-            loadModelBtn.textContent = 'Loading...';
-            
-            try {
-                const response = await fetch('/load_model', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ model_type: selectedModel })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    modelLoaded = true;
-                    showStatus(`${selectedModel.charAt(0).toUpperCase() + selectedModel.slice(1)} model loaded successfully! You can now classify images.`, 'success');
-                    uploadSection.classList.add('enabled');
-                    cameraSection.classList.remove('disabled');
-                    loadModelBtn.textContent = 'Model Loaded ✓';
-                    loadModelBtn.style.background = '#4CAF50';
-                } else {
-                    showStatus(`Failed to load model: ${result.error}`, 'warning');
-                    loadModelBtn.disabled = false;
-                    loadModelBtn.textContent = 'Load Model';
-                }
-            } catch (error) {
-                showStatus(`Error loading model: ${error.message}`, 'warning');
-                loadModelBtn.disabled = false;
-                loadModelBtn.textContent = 'Load Model';
-            }
-        }
+            messagebox.showinfo("Session Statistics", message)
         
-        function showStatus(message, type) {
-            statusMessage.textContent = message;
-            statusMessage.className = `status-message status-${type}`;
-        }
-        
-        // File upload handling
-        const imageInput = document.getElementById('imageInput');
-        const uploadArea = document.getElementById('uploadArea');
-        
-        // Drag and drop functionality
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            if (modelLoaded) {
-                uploadArea.classList.add('dragover');
-            }
-        });
-        
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-        
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            if (modelLoaded && e.dataTransfer.files.length > 0) {
-                handleFileSelect(e.dataTransfer.files[0]);
-            }
-        });
-        
-        imageInput.addEventListener('change', (e) => {
-            if (modelLoaded && e.target.files.length > 0) {
-                handleFileSelect(e.target.files[0]);
-            }
-        });
-        
-        // Camera functionality
-        const startCameraBtn = document.getElementById('startCameraBtn');
-        const stopCameraBtn = document.getElementById('stopCameraBtn');
-        const captureBtn = document.getElementById('captureBtn');
-        const cameraVideo = document.getElementById('cameraVideo');
-        const captureCanvas = document.getElementById('captureCanvas');
-        
-        startCameraBtn.addEventListener('click', startCamera);
-        stopCameraBtn.addEventListener('click', stopCamera);
-        captureBtn.addEventListener('click', captureAndPredict);
-        
-        async function startCamera() {
-    if (!modelLoaded) {
-        showStatus('Please load a model first', 'warning');
-        return;
-    }
+        self.root.destroy()
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showError('Camera access not supported in this browser or insecure origin.');
-        return;
-    }
-
-    try {
-        stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: 640 },
-                height: { ideal: 480 }
-            }
-        });
-        cameraVideo.srcObject = stream;
-
-        startCameraBtn.classList.add('hidden');
-        stopCameraBtn.classList.remove('hidden');
-        captureBtn.classList.remove('hidden');
-        cameraVideo.classList.remove('hidden');
-    } catch (error) {
-        showError('Error accessing camera: ' + error.message);
-    }
-}
-
-        function stopCamera() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                stream = null;
-            }
-            
-            startCameraBtn.classList.remove('hidden');
-            stopCameraBtn.classList.add('hidden');
-            captureBtn.classList.add('hidden');
-            cameraVideo.classList.add('hidden');
-        }
-        
-        function captureAndPredict() {
-            if (!modelLoaded) {
-                showStatus('Please load a model first', 'warning');
-                return;
-            }
-            
-            const canvas = captureCanvas;
-            const context = canvas.getContext('2d');
-            
-            canvas.width = cameraVideo.videoWidth;
-            canvas.height = cameraVideo.videoHeight;
-            
-            context.drawImage(cameraVideo, 0, 0);
-            
-            // Convert canvas to blob and send for prediction
-            canvas.toBlob((blob) => {
-                const formData = new FormData();
-                formData.append('image', blob, 'capture.jpg');
-                uploadImage(formData, true);
-            }, 'image/jpeg', 0.8);
-        }
-        
-        function handleFileSelect(file) {
-            if (!modelLoaded) {
-                showStatus('Please load a model first', 'warning');
-                return;
-            }
-            
-            if (!file.type.startsWith('image/')) {
-                showError('Please select a valid image file.');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('image', file);
-            uploadImage(formData, false);
-        }
-        
-        async function uploadImage(formData, isFromCamera) {
-            showLoading();
-            
-            try {
-                const response = await fetch('/predict', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    displayResult(result, isFromCamera);
-                } else {
-                    showError(result.error || 'Prediction failed');
-                }
-            } catch (error) {
-                showError('Error uploading image: ' + error.message);
-            }
-        }
-        
-        function displayResult(result, isFromCamera) {
-            hideLoading();
-            
-            const resultSection = document.getElementById('resultSection');
-            const imagePreview = document.getElementById('imagePreview');
-            const predictionTitle = document.getElementById('predictionTitle');
-            const confidenceBars = document.getElementById('confidenceBars');
-            const resultDiv = document.getElementById('resultDiv');
-            
-            // Show image
-            if (!isFromCamera) {
-                imagePreview.src = 'data:image/jpeg;base64,' + result.image;
-            } else {
-                // For camera captures, use the canvas content
-                imagePreview.src = captureCanvas.toDataURL('image/jpeg');
-            }
-            
-            // Show prediction
-            predictionTitle.textContent = `Prediction: ${result.prediction}`;
-            
-            // Create confidence bars
-            confidenceBars.innerHTML = '';
-            const sortedScores = Object.entries(result.confidence_scores)
-                .sort(([,a], [,b]) => b - a);
-            
-            sortedScores.forEach(([className, confidence]) => {
-                const item = document.createElement('div');
-                item.className = 'confidence-item';
-                
-                const isTopPrediction = className === result.prediction;
-                const fillColor = isTopPrediction ? 
-                    'linear-gradient(45deg, #4285F4, #34A853)' : 
-                    'linear-gradient(45deg, #ccc, #999)';
-                
-                item.innerHTML = `
-                    <div class="confidence-label">
-                        <span>${className}</span>
-                        <span>${confidence.toFixed(1)}%</span>
-                    </div>
-                    <div class="confidence-bar">
-                        <div class="confidence-fill" style="width: ${confidence}%; background: ${fillColor};"></div>
-                    </div>
-                `;
-                
-                confidenceBars.appendChild(item);
-            });
-            
-            resultSection.style.display = 'block';
-            resultDiv.classList.remove('hidden');
-        }
-        
-        function showLoading() {
-            document.getElementById('loadingDiv').classList.remove('hidden');
-            document.getElementById('errorDiv').classList.add('hidden');
-            document.getElementById('resultDiv').classList.add('hidden');
-            document.getElementById('resultSection').style.display = 'block';
-        }
-        
-        function hideLoading() {
-            document.getElementById('loadingDiv').classList.add('hidden');
-        }
-        
-        function showError(message) {
-            hideLoading();
-            const errorDiv = document.getElementById('errorDiv');
-            errorDiv.textContent = message;
-            errorDiv.classList.remove('hidden');
-            document.getElementById('resultSection').style.display = 'block';
-        }
-    </script>
-</body>
-</html>
-"""
-
-# Flask web application
-def create_web_app():
-    """Create Flask web application"""
-    app = Flask(__name__)
-    app.secret_key = 'your-secret-key'  # Replace with a secure key in production
-
-    @app.route("/", methods=["GET"])
-    def home():
-        return render_template_string(HTML_TEMPLATE)
-
-    @app.route("/load_model", methods=["POST"])
-    def load_model_route():
-        global current_model, current_classes, current_device, current_model_type
-        try:
-            data = request.get_json()
-            model_type = data.get("model_type")
-            model, classes, device = load_model(model_type)
-            if model is None:
-                return jsonify({"success": False, "error": "Failed to load model."})
-            current_model = model
-            current_classes = classes
-            current_device = device
-            current_model_type = model_type
-            return jsonify({"success": True})
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)})
-
-    @app.route("/predict", methods=["POST"])
-    def predict_route():
-        global current_model, current_classes, current_device
-        if current_model is None:
-            return jsonify({"success": False, "error": "Model not loaded."})
-
-        if "image" not in request.files:
-            return jsonify({"success": False, "error": "No image file provided."})
-
-        file = request.files["image"]
-        try:
-            image_bytes = file.read()
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            _, top_prediction, confidence_scores = predict_image(image, current_model, current_classes, current_device)
-            buffered = io.BytesIO()
-            image.save(buffered, format="JPEG")
-            img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-            return jsonify({
-                "success": True,
-                "prediction": top_prediction,
-                "confidence_scores": confidence_scores,
-                "image": img_str
-            })
-        except Exception as e:
-            return jsonify({"success": False, "error": str(e)})
-
-    return app
-
-# Threaded server to run Flask in the background if needed
-class ServerThread(threading.Thread):
-    def __init__(self, app, port=5000):
-        threading.Thread.__init__(self)
-        self.srv = make_server("0.0.0.0", port, app)
-        self.ctx = app.app_context()
-        self.ctx.push()
-
-    def run(self):
-        print("Starting server on http://localhost:5000")
-        self.srv.serve_forever()
-
-    def shutdown(self):
-        self.srv.shutdown()
-        print("Server stopped.")
-
-# Run the web app directly if this file is executed
+# Run the application
 if __name__ == "__main__":
-    flask_app = create_web_app()
-    flask_app.run(debug=True, host="0.0.0.0", port=5000)
+    root = tk.Tk()
+    app = PredictionApp(root, MODEL_CONFIGS)
+    root.mainloop()
